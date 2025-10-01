@@ -1,0 +1,4 @@
+target/
+.env
+/frontend/dist
+/frontend/node_modules
