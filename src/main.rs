@@ -197,7 +197,7 @@ pub async fn main() -> CarbonResult<()> {
                         } // Write lock is automatically dropped here
 
                         // Now process the price change with updated data
-                        display_pool_price_change(latest_val, latest, pool_info_clone.clone())
+                        display_pool_price_change(latest, latest_val, pool_info_clone.clone())
                             .await;
                     } else {
                         println!("❌ Condition NOT met - display_pool_price_change NOT called");
@@ -714,7 +714,7 @@ impl Processor for RaydiumV4Process {
             account_keys.extend(writable_account_keys);
             account_keys.extend(readonly_account_keys);
 
-            if !account_keys.contains(&pool_address) {
+            if !account_keys.contains(&pool_address) || account_keys.contains(&PUMPSWAP_PROGRAM_ID) {
                 continue; // Skip users whose pool is not involved in this transaction
             }
 
@@ -926,11 +926,12 @@ impl RaydiumV4Process {
                             } else {
                                 0.0 // Default to 0 if output reserve is zero
                             };
+                            println!("signature : {}", metadata.transaction_metadata.signature);
                             println!("pool_price_sol 1: {:?}", pool_price_sol);
-
+                            
                             {
                                 let mut real_pool_info =
-                                    raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
                                 let pool_info = real_pool_info.get_mut(pool_id).unwrap();
                                 for info in pool_info {
                                     if info.user_bot_data.user_id.to_string() == user_id.clone() {
@@ -940,19 +941,20 @@ impl RaydiumV4Process {
                             }
                         } else {
                             mint_decimal = full_token_balances
-                                .iter()
-                                .flat_map(|balances| balances.iter())
-                                .find(|balance| balance.mint == input_mint.to_string())
-                                .and_then(|balance| Some(balance.ui_token_amount.decimals))
-                                .unwrap_or(6);
-
-                            let pool_price_sol = if post_input_reserve_val > 0.0 {
-                                (post_output_reserve_val / 10f64.powf(9 as f64))
-                                    / (post_input_reserve_val / 10f64.powf(mint_decimal as f64))
-                            } else {
-                                0.0 // Default to 0 if input reserve is zero
-                            };
-                            println!("pool_price_sol 2: {:?}", pool_price_sol);
+                            .iter()
+                            .flat_map(|balances| balances.iter())
+                            .find(|balance| balance.mint == input_mint.to_string())
+                            .and_then(|balance| Some(balance.ui_token_amount.decimals))
+                            .unwrap_or(6);
+                        
+                        let pool_price_sol = if post_input_reserve_val > 0.0 {
+                            (post_output_reserve_val / 10f64.powf(9 as f64))
+                            / (post_input_reserve_val / 10f64.powf(mint_decimal as f64))
+                        } else {
+                            0.0 // Default to 0 if input reserve is zero
+                        };
+                        println!("signature : {}", metadata.transaction_metadata.signature);
+                        println!("pool_price_sol 2: {:?}", pool_price_sol);
 
                             {
                                 let mut real_pool_info =
@@ -1415,7 +1417,7 @@ impl Processor for PumpSwapProcess {
         let user_list = raydium_amm_monitor::statics::USER_LIST.read().await;
         let user_list_clone = user_list.clone();
         drop(user_list); // Release the read lock immediately
-
+        
         // Process all users concurrently without blocking
         for user_bot_data in user_list_clone.iter() {
             // Check if this user's pool_id matches the current transaction
@@ -1436,7 +1438,7 @@ impl Processor for PumpSwapProcess {
             account_keys.extend(writable_account_keys);
             account_keys.extend(readonly_account_keys);
 
-            if !account_keys.contains(&pool_address) {
+            if !account_keys.contains(&pool_address) || account_keys.contains(&RAY_V4_PROGRAM_ID) {
                 continue; // Skip users whose pool is not involved in this transaction
             }
 
@@ -1673,9 +1675,6 @@ impl PumpSwapProcess {
                             }
                         };
 
-                        let input_change = post_input_reserve_val - pre_input_reserve_val;
-                        let output_change = post_output_reserve_val - pre_output_reserve_val;
-
                         if input_mint == WSOL {
                             mint_decimal = full_token_balances
                                 .iter()
@@ -1683,10 +1682,6 @@ impl PumpSwapProcess {
                                 .find(|balance| balance.mint == output_mint.to_string())
                                 .and_then(|balance| Some(balance.ui_token_amount.decimals))
                                 .unwrap_or(6);
-
-                            let base_mint_amount =
-                                input_change as f64 / 10f64.powf(mint_decimal as f64);
-                            let buy_amount = output_change as f64 / 10f64.powf(9 as f64);
 
                             // Calculate pool price
                             let pool_price_sol = if post_output_reserve_val > 0.0 {
@@ -1697,11 +1692,6 @@ impl PumpSwapProcess {
                             };
 
                             println!("pool_price_sol: {:?}", pool_price_sol);
-
-                            println!(
-                                "Base mint amount: {}, Buy amount: {}",
-                                base_mint_amount, buy_amount
-                            );
 
                             {
                                 let mut real_pool_info =
@@ -1721,10 +1711,6 @@ impl PumpSwapProcess {
                                 .and_then(|balance| Some(balance.ui_token_amount.decimals))
                                 .unwrap_or(6);
 
-                            let base_mint_amount =
-                                input_change as f64 / 10f64.powf(mint_decimal as f64);
-                            let buy_amount = output_change as f64 / 10f64.powf(9 as f64);
-
                             let pool_price_sol = if post_input_reserve_val > 0.0 {
                                 (post_output_reserve_val / 10f64.powf(9 as f64))
                                     / (post_input_reserve_val / 10f64.powf(mint_decimal as f64))
@@ -1733,11 +1719,6 @@ impl PumpSwapProcess {
                             };
 
                             println!("pool_price_sol: {:?}", pool_price_sol);
-
-                            println!(
-                                "Buy amount: {}, Buy amount: {}",
-                                base_mint_amount, buy_amount
-                            );
 
                             {
                                 let mut real_pool_info =
@@ -2213,8 +2194,8 @@ impl PumpSwapProcess {
                                 .unwrap_or(6);
 
                             let base_mint_amount =
-                                input_change as f64 / 10f64.powf(mint_decimal as f64);
-                            let sell_amount = output_change as f64 / 10f64.powf(9 as f64);
+                                input_change as f64 / 10f64.powf(9 as f64);
+                            let sell_amount = output_change as f64 / 10f64.powf(mint_decimal as f64);
 
                             let pool_price_sol = if post_output_reserve_val > 0.0 {
                                 (post_input_reserve_val / 10f64.powf(9 as f64))
@@ -2226,9 +2207,20 @@ impl PumpSwapProcess {
                             println!("pool_price_sol: {:?}", pool_price_sol);
 
                             println!(
-                                "Sell amount: {}, Sell amount: {}",
+                                "Base mint amount: {}, Sell amount: {}",
                                 base_mint_amount, sell_amount
                             );
+
+                            {
+                                let mut real_pool_info =
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        info.latest_pool_price = pool_price_sol;
+                                    }
+                                }
+                            }
                         } else {
                             mint_decimal = full_token_balances
                                 .iter()
@@ -2251,9 +2243,20 @@ impl PumpSwapProcess {
                             println!("pool_price_sol: {:?}", pool_price_sol);
 
                             println!(
-                                "Sell amount: {}, Sell amount: {}",
+                                "Base mint amount: {}, Sell amount: {}",
                                 base_mint_amount, sell_amount
                             );
+
+                            {
+                                let mut real_pool_info =
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        info.latest_pool_price = pool_price_sol;
+                                    }
+                                }
+                            }
                         }
 
                         arranged.user = pool_info
