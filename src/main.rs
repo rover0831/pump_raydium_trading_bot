@@ -271,7 +271,7 @@ async fn display_pool_price_change(
                     let new_clone = new.clone();
                     // Fix division by zero bug - ensure old price is not zero
                     let percent = if old > 0.0 {
-                        ((new_clone - old) / old) * 100.0
+                        ((old - new_clone) / old) * 100.0
                     } else {
                         0.0 // Default to 0% if old price is zero or negative
                     };
