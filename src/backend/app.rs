@@ -13,11 +13,17 @@ use crate::backend::{
 pub fn create_app(database: AppDatabase) -> Router {
     // Create CORS layer with proper configuration for production
     let cors = if env::var("RUST_ENV").unwrap_or_default() == "production" {
-        // Production CORS - more restrictive
+        // Production CORS - more restrictive but compatible with credentials
         CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_headers([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::ACCEPT,
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::ORIGIN,
+                axum::http::HeaderName::from_static("x-requested-with"),
+            ])
             .allow_credentials(true)
     } else {
         // Development CORS - permissive

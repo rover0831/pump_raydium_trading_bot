@@ -34,6 +34,7 @@ pub fn sol_token_quote(
     is_buy: bool,
 ) -> u64 {
     let out_token_amount;
+    println!("amount: {:?} virtual_sol_reserves: {:?} virtual_token_reserves: {:?} is_buy: {:?}", amount, virtual_sol_reserves, virtual_token_reserves, is_buy);
     if is_buy {
         out_token_amount = virtual_token_reserves as f64
             / (amount as f64 + virtual_sol_reserves as f64)

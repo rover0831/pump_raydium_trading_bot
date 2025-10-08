@@ -205,7 +205,7 @@ pub async fn main() -> CarbonResult<()> {
                 }
             }
             // Check for new pools every 1s
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     });
 
@@ -279,7 +279,7 @@ async fn display_pool_price_change(
                         "POOL_PRICE changed: old = {:.8}, new = {:.8}, change = {:+.4}%",
                         old, new_clone, percent
                     );
-                    if percent <= -pool_info.user_bot_data.bot_setting.entry_percent {
+                    if percent >= pool_info.user_bot_data.bot_setting.entry_percent {
                         println!(
                             "ALERT: POOL_PRICE dropped more than {}%!",
                             pool_info.user_bot_data.bot_setting.entry_percent
@@ -571,48 +571,51 @@ async fn build_and_submit_swap_transaction(
             let transaction: VersionedTransaction = bincode::deserialize(&transaction_bytes)
                 .map_err(|e| format!("Failed to deserialize transaction: {}", e))?;
 
-            match simulate_transaction(&transaction).await {
-                Ok(simulation_result) => {
-                    log::info!("=== TRANSACTION SIMULATION RESULTS ===");
-                    log::info!("Pool ID: {}", pool_info.user_bot_data.pool_id);
-                    log::info!("User ID: {}", pool_info.user_bot_data.user_id);
-                    log::info!(
-                        "Estimated compute units: {}",
-                        simulation_result.units_consumed.unwrap_or(0)
-                    );
-                    log::info!("Simulation successful: {}", simulation_result.err.is_none());
+            // println!("transaction: {:#?}", transaction);
 
-                    if let Some(logs) = simulation_result.logs {
-                        log::info!("Simulation logs ({} entries):", logs.len());
-                        for (i, log_entry) in logs.iter().enumerate() {
-                            log::info!("  [{}] {}", i + 1, log_entry);
-                        }
-                    }
+            // match simulate_transaction(&transaction).await {
+            //     Ok(simulation_result) => {
+            //         log::info!("=== TRANSACTION SIMULATION RESULTS ===");
+            //         log::info!("Pool ID: {}", pool_info.user_bot_data.pool_id);
+            //         log::info!("User ID: {}", pool_info.user_bot_data.user_id);
+            //         log::info!(
+            //             "Estimated compute units: {}",
+            //             simulation_result.units_consumed.unwrap_or(0)
+            //         );
+            //         log::info!("Simulation successful: {}", simulation_result.err.is_none());
 
-                    if let Some(accounts) = simulation_result.accounts {
-                        log::info!("Account changes: {} accounts modified", accounts.len());
-                    }
+            //         if let Some(logs) = simulation_result.logs {
+            //             log::info!("Simulation logs ({} entries):", logs.len());
+            //             for (i, log_entry) in logs.iter().enumerate() {
+            //                 log::info!("  [{}] {}", i + 1, log_entry);
+            //             }
+            //         }
 
-                    log::info!("=== END SIMULATION RESULTS ===");
+            //         if let Some(accounts) = simulation_result.accounts {
+            //             log::info!("Account changes: {} accounts modified", accounts.len());
+            //         }
 
-                    // Check if simulation failed
-                    if simulation_result.err.is_some() {
-                        log::error!("Transaction simulation failed: {:?}", simulation_result.err);
-                        return Ok(
-                            json!({ "result": "simulation_error", "message": format!("Simulation failed: {:?}", simulation_result.err) }),
-                        );
-                    }
-                }
-                Err(err) => {
-                    log::error!("Failed to simulate transaction: {}", err);
-                    return Ok(
-                        json!({ "result": "simulation_error", "message": format!("Simulation error: {}", err) }),
-                    );
-                }
-            }
+            //         log::info!("=== END SIMULATION RESULTS ===");
+
+            //         // Check if simulation failed
+            //         if simulation_result.err.is_some() {
+            //             log::error!("Transaction simulation failed: {:?}", simulation_result.err);
+            //             return Ok(
+            //                 json!({ "result": "simulation_error", "message": format!("Simulation failed: {:?}", simulation_result.err) }),
+            //             );
+            //         }
+            //     }
+            //     Err(err) => {
+            //         log::error!("Failed to simulate transaction: {}", err);
+            //         return Ok(
+            //             json!({ "result": "simulation_error", "message": format!("Simulation error: {}", err) }),
+            //         );
+            //     }
+            // }
 
             match jito.send_transaction(&encoded_tx).await {
                 Ok(data) => {
+                    let mut has_bought = false;
                     // Extract signature from the result
                     {
                         let user_id = pool_info.user_bot_data.user_id.clone();
@@ -625,10 +628,14 @@ async fn build_and_submit_swap_transaction(
                             if info.user_bot_data.user_id.to_string() == user_id {
                                 info.signature =
                                     Some(data["result"].as_str().unwrap_or_default().to_string());
+                                has_bought = !info.is_bought;
+                                if (has_bought) {
+                                    info.is_bought = has_bought;
+                                }
                             }
                         }
                     }
-                    Ok(json!({ "result": data }))
+                    Ok(json!({ "result": data, "has_bought": has_bought }))
                 }
                 Err(err) => Ok(json!({ "result": "error", "message": err.to_string() })),
             }
@@ -714,7 +721,8 @@ impl Processor for RaydiumV4Process {
             account_keys.extend(writable_account_keys);
             account_keys.extend(readonly_account_keys);
 
-            if !account_keys.contains(&pool_address) || account_keys.contains(&PUMPSWAP_PROGRAM_ID) {
+            if !account_keys.contains(&pool_address) || account_keys.contains(&PUMPSWAP_PROGRAM_ID)
+            {
                 continue; // Skip users whose pool is not involved in this transaction
             }
 
@@ -928,10 +936,10 @@ impl RaydiumV4Process {
                             };
                             println!("signature : {}", metadata.transaction_metadata.signature);
                             println!("pool_price_sol 1: {:?}", pool_price_sol);
-                            
+
                             {
                                 let mut real_pool_info =
-                                raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
                                 let pool_info = real_pool_info.get_mut(pool_id).unwrap();
                                 for info in pool_info {
                                     if info.user_bot_data.user_id.to_string() == user_id.clone() {
@@ -941,20 +949,20 @@ impl RaydiumV4Process {
                             }
                         } else {
                             mint_decimal = full_token_balances
-                            .iter()
-                            .flat_map(|balances| balances.iter())
-                            .find(|balance| balance.mint == input_mint.to_string())
-                            .and_then(|balance| Some(balance.ui_token_amount.decimals))
-                            .unwrap_or(6);
-                        
-                        let pool_price_sol = if post_input_reserve_val > 0.0 {
-                            (post_output_reserve_val / 10f64.powf(9 as f64))
-                            / (post_input_reserve_val / 10f64.powf(mint_decimal as f64))
-                        } else {
-                            0.0 // Default to 0 if input reserve is zero
-                        };
-                        println!("signature : {}", metadata.transaction_metadata.signature);
-                        println!("pool_price_sol 2: {:?}", pool_price_sol);
+                                .iter()
+                                .flat_map(|balances| balances.iter())
+                                .find(|balance| balance.mint == input_mint.to_string())
+                                .and_then(|balance| Some(balance.ui_token_amount.decimals))
+                                .unwrap_or(6);
+
+                            let pool_price_sol = if post_input_reserve_val > 0.0 {
+                                (post_output_reserve_val / 10f64.powf(9 as f64))
+                                    / (post_input_reserve_val / 10f64.powf(mint_decimal as f64))
+                            } else {
+                                0.0 // Default to 0 if input reserve is zero
+                            };
+                            println!("signature : {}", metadata.transaction_metadata.signature);
+                            println!("pool_price_sol 2: {:?}", pool_price_sol);
 
                             {
                                 let mut real_pool_info =
@@ -1172,7 +1180,6 @@ impl RaydiumV4Process {
                         let swap_ix = arranged.get_swap_base_in_ix(buy_exact_in_param.clone());
                         ix.push(swap_ix.clone());
 
-                        
                         // Wrap SOL if buying WSOL
                         if !has_bought {
                             let wsol_close = arranged.get_close_wsol(
@@ -1181,7 +1188,7 @@ impl RaydiumV4Process {
                                     .public_key
                                     .parse::<Pubkey>()
                                     .clone()
-                                    .unwrap()
+                                    .unwrap(),
                             );
                             ix.push(wsol_close.clone());
                         }
@@ -1363,42 +1370,6 @@ impl RaydiumV4Process {
                         }
                     }
                 }
-
-                if !has_bought {
-                    let mut start_time: Option<std::time::Instant> = None;
-                    {
-                        let real_pool_info =
-                            raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
-                        let pool_info = real_pool_info.get(pool_id).unwrap();
-                        for info in pool_info {
-                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                                start_time = info.start_time;
-                            }
-                        }
-                    }
-                    if let Some(start_time) = start_time {
-                        let end_time = std::time::Instant::now();
-                        println!("End time: {:?}", end_time);
-                        let duration = end_time.duration_since(start_time);
-                        println!("Time taken: {:?}", duration);
-
-                        // Save duration to static variable
-                        {
-                            let mut real_pool_info =
-                                raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
-                            let pool_info = real_pool_info.get_mut(pool_id).unwrap();
-                            for info in pool_info {
-                                if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                                    info.last_duration = Some(duration);
-                                    println!("✅ Saved duration to REAL_POOL_INFO: {:?}", duration);
-                                }
-                            }
-                            drop(real_pool_info);
-                        }
-                    } else {
-                        println!("No start time found");
-                    }
-                }
             }
         }
         Ok(())
@@ -1417,7 +1388,7 @@ impl Processor for PumpSwapProcess {
         let user_list = raydium_amm_monitor::statics::USER_LIST.read().await;
         let user_list_clone = user_list.clone();
         drop(user_list); // Release the read lock immediately
-        
+
         // Process all users concurrently without blocking
         for user_bot_data in user_list_clone.iter() {
             // Check if this user's pool_id matches the current transaction
@@ -1438,7 +1409,15 @@ impl Processor for PumpSwapProcess {
             account_keys.extend(writable_account_keys);
             account_keys.extend(readonly_account_keys);
 
-            if !account_keys.contains(&pool_address) || account_keys.contains(&RAY_V4_PROGRAM_ID) {
+            if !account_keys.contains(&pool_address)
+                || account_keys.contains(&RAY_V4_PROGRAM_ID)
+                || account_keys.contains(&Pubkey::from_str_const(
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+                ))
+                || account_keys.contains(&Pubkey::from_str_const(
+                    "6m2CDdhRgxpH4WjvdzxAYbGxwdGUz5MziiL5jek2kBma",
+                ))
+            {
                 continue; // Skip users whose pool is not involved in this transaction
             }
 
@@ -1547,6 +1526,7 @@ impl PumpSwapProcess {
         println!("real_pool_info dropped");
 
         let instruction_clone: DecodedInstruction<PumpSwapInstruction> = instruction.clone();
+        println!("signature: {:?}", metadata.transaction_metadata.signature);
 
         match &instruction.data {
             PumpSwapInstruction::Buy(_buy_params) => {
@@ -1691,7 +1671,7 @@ impl PumpSwapProcess {
                                 0.0 // Default to 0 if output reserve is zero
                             };
 
-                            println!("pool_price_sol: {:?}", pool_price_sol);
+                            println!("pool_price_sol pump buy 1: {:?}", pool_price_sol);
 
                             {
                                 let mut real_pool_info =
@@ -1718,7 +1698,7 @@ impl PumpSwapProcess {
                                 0.0 // Default to 0 if input reserve is zero
                             };
 
-                            println!("pool_price_sol: {:?}", pool_price_sol);
+                            println!("pool_price_sol pump buy 2: {:?}", pool_price_sol);
 
                             {
                                 let mut real_pool_info =
@@ -1825,7 +1805,7 @@ impl PumpSwapProcess {
                         };
 
                         if !has_bought {
-                            if arranged.quote_mint == WSOL {
+                            if arranged.quote_mint == WSOL && arranged.base_mint != WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_quote_token_reserves.parse::<u64>().unwrap(),
@@ -1884,16 +1864,17 @@ impl PumpSwapProcess {
                                         }
                                     }
                                 }
-                            } else {
+                            } else if arranged.quote_mint != WSOL && arranged.base_mint == WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_base_token_reserves.parse::<u64>().unwrap(),
                                     pool_quote_token_reserves.parse::<u64>().unwrap(),
                                     true,
                                 );
+                                println!("required_token_amount: {:?}", required_token_amount);
 
                                 let lamports_with_slippage =
-                                    if post_input_reserve_val + amount_in as f64 > 0.0 {
+                                    if post_output_reserve_val + amount_in as f64 > 0.0 {
                                         if has_bought {
                                             (required_token_amount as f64
                                                 * 1.0025
@@ -1946,7 +1927,7 @@ impl PumpSwapProcess {
                                 }
                             }
                         } else {
-                            if arranged.quote_mint == WSOL {
+                            if arranged.quote_mint == WSOL && arranged.base_mint != WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_base_token_reserves.parse::<u64>().unwrap(),
@@ -1997,7 +1978,7 @@ impl PumpSwapProcess {
                                         }
                                     }
                                 }
-                            } else {
+                            } else if arranged.quote_mint != WSOL && arranged.base_mint == WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_quote_token_reserves.parse::<u64>().unwrap(),
@@ -2033,7 +2014,7 @@ impl PumpSwapProcess {
                                 });
 
                                 instructions.push(sell_ix);
-                                
+
                                 let close_wsol_ix = arranged.get_close_wsol();
                                 instructions.push(close_wsol_ix);
 
@@ -2193,9 +2174,9 @@ impl PumpSwapProcess {
                                 .and_then(|balance| Some(balance.ui_token_amount.decimals))
                                 .unwrap_or(6);
 
-                            let base_mint_amount =
-                                input_change as f64 / 10f64.powf(9 as f64);
-                            let sell_amount = output_change as f64 / 10f64.powf(mint_decimal as f64);
+                            let base_mint_amount = input_change as f64 / 10f64.powf(9 as f64);
+                            let sell_amount =
+                                output_change as f64 / 10f64.powf(mint_decimal as f64);
 
                             let pool_price_sol = if post_output_reserve_val > 0.0 {
                                 (post_input_reserve_val / 10f64.powf(9 as f64))
@@ -2204,7 +2185,7 @@ impl PumpSwapProcess {
                                 0.0 // Default to 0 if output reserve is zero
                             };
 
-                            println!("pool_price_sol: {:?}", pool_price_sol);
+                            println!("pool_price_sol pump sell 2: {:?}", pool_price_sol);
 
                             println!(
                                 "Base mint amount: {}, Sell amount: {}",
@@ -2240,7 +2221,7 @@ impl PumpSwapProcess {
                                 0.0 // Default to 0 if input reserve is zero
                             };
 
-                            println!("pool_price_sol: {:?}", pool_price_sol);
+                            println!("pool_price_sol pump sell 1: {:?}", pool_price_sol);
 
                             println!(
                                 "Base mint amount: {}, Sell amount: {}",
@@ -2352,7 +2333,7 @@ impl PumpSwapProcess {
                         };
 
                         if !has_bought {
-                            if arranged.quote_mint == WSOL {
+                            if arranged.quote_mint == WSOL && arranged.base_mint != WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_quote_token_reserves.parse::<u64>().unwrap(),
@@ -2411,7 +2392,7 @@ impl PumpSwapProcess {
                                         }
                                     }
                                 }
-                            } else {
+                            } else if arranged.quote_mint != WSOL && arranged.base_mint == WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_base_token_reserves.parse::<u64>().unwrap(),
@@ -2473,7 +2454,7 @@ impl PumpSwapProcess {
                                 }
                             }
                         } else {
-                            if arranged.quote_mint == WSOL {
+                            if arranged.quote_mint == WSOL && arranged.base_mint != WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_base_token_reserves.parse::<u64>().unwrap(),
@@ -2524,7 +2505,7 @@ impl PumpSwapProcess {
                                         }
                                     }
                                 }
-                            } else {
+                            } else if arranged.quote_mint != WSOL && arranged.base_mint == WSOL {
                                 let required_token_amount = sol_token_quote(
                                     amount_in,
                                     pool_quote_token_reserves.parse::<u64>().unwrap(),
@@ -2624,8 +2605,7 @@ impl PumpSwapProcess {
                     let pool_info = real_pool_info.get_mut(pool_id).unwrap();
                     for info in pool_info {
                         if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                            has_bought = !info.is_bought;
-                            info.is_bought = has_bought;
+                            has_bought = info.is_bought;
                         }
                     }
                 }
@@ -2692,19 +2672,19 @@ impl PumpSwapProcess {
                     }
                     let output_sol = output_lamports_delta as f64 / 1_000_000_000.0;
                     println!("Output SOL: {}", output_sol);
-                    let mut last_output_lamports_delta = None;
+                    let mut last_input_lamports_delta = None;
                     {
                         let real_pool_info =
                             raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
                         let pool_info = real_pool_info.get(pool_id).unwrap();
                         for info in pool_info {
                             if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                                last_output_lamports_delta = info.last_output_lamports_delta;
+                                last_input_lamports_delta = info.last_input_lamports_delta;
                             }
                         }
                     }
                     let profit_sol =
-                        (output_lamports_delta - last_output_lamports_delta.unwrap_or(0)) as f64
+                        (output_lamports_delta - last_input_lamports_delta.unwrap_or(0)) as f64
                             / 1_000_000_000.0;
                     println!("Profit: {}", profit_sol);
                     {
@@ -2717,18 +2697,7 @@ impl PumpSwapProcess {
                             }
                         }
                     }
-                    let mut last_input_lamports: Option<i128> = None;
-                    {
-                        let real_pool_info =
-                            raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
-                        let pool_info = real_pool_info.get(pool_id).unwrap();
-                        for info in pool_info {
-                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                                last_input_lamports = info.last_input_lamports_delta;
-                            }
-                        }
-                    }
-                    let input_sol = last_input_lamports.unwrap_or(0) as f64 / 1_000_000_000.0;
+                    let input_sol = last_input_lamports_delta.unwrap_or(0) as f64 / 1_000_000_000.0;
                     let roi = if input_sol > 0.0 {
                         (profit_sol / input_sol) * 100.0
                     } else {
@@ -2746,45 +2715,6 @@ impl PumpSwapProcess {
                         }
                     }
                 }
-
-                // if !has_bought {
-                //     let mut start_time: Option<std::time::Instant> = None;
-                //     {
-                //         let real_pool_info =
-                //             raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
-                //         let pool_info = real_pool_info.get(pool_id).unwrap();
-                //         for info in pool_info {
-                //             if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                //                 start_time = info.start_time;
-                //             }
-                //         }
-                //     }
-                //     if let Some(start_time) = start_time {
-                //         let end_time = std::time::Instant::now();
-                //         println!("End time: {:?}", end_time);
-                //         let duration = end_time.duration_since(start_time);
-                //         println!("Time taken: {:?}", duration);
-
-                //         // Save duration to static variable
-                //         {
-                //             let mut real_pool_info =
-                //                 raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
-                //             let pool_info = real_pool_info.get_mut(pool_id).unwrap();
-                //             for info in pool_info {
-                //                 if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                //                     info.last_duration = Some(duration);
-                //                     println!("✅ Saved duration to REAL_POOL_INFO: {:?}", duration);
-                //                 }
-                //             }
-                //             drop(real_pool_info);
-                //         }
-
-                //         // Clean up bot state after selling
-                //         cleanup_bot_after_sell(&pool_info).await;
-                //     } else {
-                //         println!("No start time found");
-                //     }
-                // }
             }
         }
         Ok(())
