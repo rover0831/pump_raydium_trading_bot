@@ -168,18 +168,18 @@ pub async fn main() -> CarbonResult<()> {
             };
 
             for (pool_id, pool_infos) in pool_data.iter() {
-                println!("Starting monitoring for pool_id: {}", pool_id);
-
                 for pool_info in pool_infos {
                     let pool_price = pool_info.pool_price;
                     let latest_price = pool_info.latest_pool_price;
 
-                    // Only process if we have a price change
-                    if latest_price > 0.0 {
-                        println!("✅ Condition met! Calling display_pool_price_change");
+                    // Only process if we have a valid price change
+                    if latest_price > 0.0 && pool_price != latest_price {
+                        println!("📊 Price change detected for pool {}: {:.8} -> {:.8}", 
+                            pool_id, pool_price, latest_price);
+                        
                         let pool_info_clone = pool_info.clone();
-                        let latest = pool_price.clone();
-                        let latest_val = latest_price.clone();
+                        let old_price = pool_price;
+                        let new_price = latest_price;
 
                         // Update the pool_price to match latest_price before processing
                         {
@@ -190,21 +190,19 @@ pub async fn main() -> CarbonResult<()> {
                                     if info.user_bot_data.user_id.to_string()
                                         == pool_info.user_bot_data.user_id.to_string()
                                     {
-                                        info.pool_price = latest_val;
+                                        info.pool_price = new_price;
                                     }
                                 }
                             }
                         } // Write lock is automatically dropped here
 
-                        // Now process the price change with updated data
-                        display_pool_price_change(latest, latest_val, pool_info_clone.clone())
+                        // Process the price change with updated data
+                        display_pool_price_change(old_price, new_price, pool_info_clone.clone())
                             .await;
-                    } else {
-                        println!("❌ Condition NOT met - display_pool_price_change NOT called");
                     }
                 }
             }
-            // Check for new pools every 1s
+            // Check for price changes every 400ms
             tokio::time::sleep(Duration::from_millis(400)).await;
         }
     });
@@ -262,140 +260,165 @@ async fn display_pool_price_change(
     new: f64,
     pool_info: raydium_amm_monitor::backend::services::bot_service::RealPoolInfo,
 ) {
-    if old > 0.0 {
+    if old > 0.0 && new > 0.0 {
         tokio::spawn({
             let bought = pool_info.is_bought;
 
             async move {
                 if !bought {
+                    // We haven't bought yet - looking for entry signal
                     let new_clone = new.clone();
-                    // Fix division by zero bug - ensure old price is not zero
-                    let percent = if old > 0.0 {
+                    // Calculate percentage drop from old price
+                    let percent_drop = if old > 0.0 {
                         ((old - new_clone) / old) * 100.0
                     } else {
-                        0.0 // Default to 0% if old price is zero or negative
+                        0.0
                     };
+                    
                     println!(
-                        "POOL_PRICE changed: old = {:.8}, new = {:.8}, change = {:+.4}%",
-                        old, new_clone, percent
+                        "📊 ENTRY CHECK: old = {:.8}, new = {:.8}, drop = {:+.4}% (threshold: {}%)",
+                        old, new_clone, percent_drop, pool_info.user_bot_data.bot_setting.entry_percent
                     );
-                    if percent >= pool_info.user_bot_data.bot_setting.entry_percent {
+                    
+                    // Check if price dropped enough to trigger entry
+                    if percent_drop >= pool_info.user_bot_data.bot_setting.entry_percent {
                         println!(
-                            "ALERT: POOL_PRICE dropped more than {}%!",
-                            pool_info.user_bot_data.bot_setting.entry_percent
+                            "🚀 ENTRY SIGNAL: Price dropped {:.4}% (threshold: {}%) - BUYING!",
+                            percent_drop, pool_info.user_bot_data.bot_setting.entry_percent
                         );
+                        
                         let pool_info_for_spawn = pool_info.clone();
                         let new_price_clone = new_clone.clone();
                         let current_time = Utc::now().timestamp_millis();
+                        
+                        // Update bought price and timestamp
                         {
                             let mut real_pool_info =
                                 raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
-                            let pool_info = real_pool_info
-                                .get_mut(&pool_info_for_spawn.user_bot_data.pool_id.clone())
-                                .unwrap();
-                            for info in pool_info {
-                                if info.user_bot_data.user_id.to_string()
-                                    == pool_info_for_spawn.user_bot_data.user_id.to_string()
-                                {
-                                    info.bought_price = Some(new_price_clone);
-                                    info.bought_at = Some(current_time);
+                            if let Some(pool_infos) = real_pool_info.get_mut(&pool_info_for_spawn.user_bot_data.pool_id.clone()) {
+                                for info in pool_infos {
+                                    if info.user_bot_data.user_id.to_string()
+                                        == pool_info_for_spawn.user_bot_data.user_id.to_string()
+                                    {
+                                        info.bought_price = Some(new_price_clone);
+                                        info.bought_at = Some(current_time);
+                                        println!("✅ Updated bought_price: {:.8}, bought_at: {}", new_price_clone, current_time);
+                                    }
                                 }
                             }
                         }
 
                         match build_and_submit_swap_transaction(pool_info_for_spawn.clone()).await {
-                            Ok(result) => log::info!("Transaction result: {:?}", result),
-                            Err(err) => log::error!("Transaction failed: {}", err),
+                            Ok(result) => {
+                                log::info!("✅ BUY transaction result: {:?}", result);
+                            }
+                            Err(err) => {
+                                log::error!("❌ BUY transaction failed: {}", err);
+                            }
                         }
                     }
                 } else {
+                    // We have bought - looking for exit signals (TP/SL)
                     let new_clone = new.clone();
                     let bought_price = pool_info.bought_price;
-                    let old_bought_price = bought_price.clone();
-                    // Fix division by zero bug - ensure old_bought_price is not zero
-                    let percent = if let Some(old_price) = old_bought_price {
-                        if old_price > 0.0 {
-                            ((new_clone - old_price) / old_price) * 100.0
+                    
+                    if let Some(bought_price_val) = bought_price {
+                        // Calculate percentage change from bought price
+                        let percent_change = if bought_price_val > 0.0 {
+                            ((new_clone - bought_price_val) / bought_price_val) * 100.0
                         } else {
-                            0.0 // Default to 0% if old price is zero or negative
-                        }
-                    } else {
-                        0.0 // Default to 0% if no bought price available
-                    };
-                    if let Some(old_price) = old_bought_price {
+                            0.0
+                        };
+                        
                         println!(
-                            "POOL_PRICE changed : buy price = {:.8}, current price = {:.8}, change = {:.8}",
-                            old_price, new_clone, percent
+                            "📈 EXIT CHECK: bought = {:.8}, current = {:.8}, change = {:+.4}% (TP: {}%, SL: {}%)",
+                            bought_price_val, new_clone, percent_change,
+                            pool_info.user_bot_data.bot_setting.take_profit,
+                            pool_info.user_bot_data.bot_setting.stop_loss
                         );
-                    }
-                    let bought_at = pool_info.bought_at;
-                    let current_time = Utc::now().timestamp_millis();
-
-                    // Check how long it flowed from bought_at
-                    if percent >= pool_info.user_bot_data.bot_setting.take_profit {
-                        println!("ALERT: POOL_PRICE increased more than {}%!", percent);
-                        // Reset IS_BOUGHT to false when selling
-                        match build_and_submit_swap_transaction(pool_info.clone()).await {
-                            Ok(result) => {
-                                log::info!("Take profit transaction result: {:?}", result)
-                            }
-                            Err(err) => log::error!("Take profit transaction failed: {}", err),
-                        }
-
-                        // Clean up bot state after selling
-                        set_bot_after_sell(&pool_info).await;
-                    } else if percent <= -pool_info.user_bot_data.bot_setting.stop_loss {
-                        println!("ALERT: POOL_PRICE decreased more than {}%!", percent);
-
-                        // Reset IS_BOUGHT to false when selling
-                        match build_and_submit_swap_transaction(pool_info.clone()).await {
-                            Ok(result) => log::info!("Stop loss transaction result: {:?}", result),
-                            Err(err) => log::error!("Stop loss transaction failed: {}", err),
-                        }
-
-                        // Clean up bot state after selling
-                        set_bot_after_sell(&pool_info).await;
-                    } else if pool_info.user_bot_data.bot_setting.auto_exit == 0 {
-                        // Immediate sell triggered by stop_bot
-                        println!("ALERT: IMMEDIATE SELL triggered by stop_bot!");
-                        match build_and_submit_swap_transaction(pool_info.clone()).await {
-                            Ok(result) => {
-                                log::info!("Immediate sell transaction result: {:?}", result)
-                            }
-                            Err(err) => log::error!("Immediate sell transaction failed: {}", err),
-                        }
-
-                        // Clean up bot state after selling
-                        cleanup_bot_after_stop(&pool_info).await;
-                    } else if let Some(bought_at_time) = bought_at {
-                        // Fix unsafe unwrap() by using safer conversion
-                        let auto_exit_ms =
-                            match (pool_info.user_bot_data.bot_setting.auto_exit * 1000).try_into()
-                            {
-                                Ok(ms) => ms,
-                                Err(_) => {
-                                    println!(
-                                        "Warning: AUTO_EXIT conversion failed, using default 1000ms"
-                                    );
-                                    1000i64
-                                }
-                            };
-                        if current_time - bought_at_time > auto_exit_ms {
-                            println!(
-                                "ALERT: AUTO EXIT triggered after {} seconds!",
-                                pool_info.user_bot_data.bot_setting.auto_exit
-                            );
-                            // Reset IS_BOUGHT to false when selling
+                        
+                        let bought_at = pool_info.bought_at;
+                        let current_time = Utc::now().timestamp_millis();
+                        
+                        // Check take profit condition
+                        if percent_change >= pool_info.user_bot_data.bot_setting.take_profit {
+                            println!("🎯 TAKE PROFIT: Price increased {:.4}% (threshold: {}%) - SELLING!",
+                                percent_change, pool_info.user_bot_data.bot_setting.take_profit);
+                            
                             match build_and_submit_swap_transaction(pool_info.clone()).await {
                                 Ok(result) => {
-                                    log::info!("Auto exit transaction result: {:?}", result)
+                                    log::info!("✅ TAKE PROFIT transaction result: {:?}", result);
                                 }
-                                Err(err) => log::error!("Auto exit transaction failed: {}", err),
+                                Err(err) => {
+                                    log::error!("❌ TAKE PROFIT transaction failed: {}", err);
+                                }
                             }
-
+                            
                             // Clean up bot state after selling
                             set_bot_after_sell(&pool_info).await;
                         }
+                        // Check stop loss condition
+                        else if percent_change <= -pool_info.user_bot_data.bot_setting.stop_loss {
+                            println!("🛑 STOP LOSS: Price decreased {:.4}% (threshold: {}%) - SELLING!",
+                                percent_change.abs(), pool_info.user_bot_data.bot_setting.stop_loss);
+                            
+                            match build_and_submit_swap_transaction(pool_info.clone()).await {
+                                Ok(result) => {
+                                    log::info!("✅ STOP LOSS transaction result: {:?}", result);
+                                }
+                                Err(err) => {
+                                    log::error!("❌ STOP LOSS transaction failed: {}", err);
+                                }
+                            }
+                            
+                            // Clean up bot state after selling
+                            set_bot_after_sell(&pool_info).await;
+                        }
+                        // Check immediate sell (stop bot)
+                        else if pool_info.user_bot_data.bot_setting.auto_exit == 0 {
+                            println!("🛑 IMMEDIATE SELL: Stop bot triggered!");
+                            
+                            match build_and_submit_swap_transaction(pool_info.clone()).await {
+                                Ok(result) => {
+                                    log::info!("✅ IMMEDIATE SELL transaction result: {:?}", result);
+                                }
+                                Err(err) => {
+                                    log::error!("❌ IMMEDIATE SELL transaction failed: {}", err);
+                                }
+                            }
+                            
+                            // Clean up bot state after selling
+                            cleanup_bot_after_stop(&pool_info).await;
+                        }
+                        // Check auto exit timeout
+                        else if let Some(bought_at_time) = bought_at {
+                            let auto_exit_ms = match (pool_info.user_bot_data.bot_setting.auto_exit * 1000).try_into() {
+                                Ok(ms) => ms,
+                                Err(_) => {
+                                    println!("Warning: AUTO_EXIT conversion failed, using default 1000ms");
+                                    1000i64
+                                }
+                            };
+                            
+                            if current_time - bought_at_time > auto_exit_ms {
+                                println!("⏰ AUTO EXIT: Timeout after {} seconds - SELLING!",
+                                    pool_info.user_bot_data.bot_setting.auto_exit);
+                                
+                                match build_and_submit_swap_transaction(pool_info.clone()).await {
+                                    Ok(result) => {
+                                        log::info!("✅ AUTO EXIT transaction result: {:?}", result);
+                                    }
+                                    Err(err) => {
+                                        log::error!("❌ AUTO EXIT transaction failed: {}", err);
+                                    }
+                                }
+                                
+                                // Clean up bot state after selling
+                                set_bot_after_sell(&pool_info).await;
+                            }
+                        }
+                    } else {
+                        println!("⚠️ WARNING: Bot is marked as bought but no bought_price found!");
                     }
                 }
             }
@@ -1243,13 +1266,12 @@ impl RaydiumV4Process {
             if sig == metadata_signature {
                 let mut has_bought = false;
                 {
-                    let mut real_pool_info =
-                        raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
-                    let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                    let real_pool_info =
+                        raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                    let pool_info = real_pool_info.get(pool_id).unwrap();
                     for info in pool_info {
                         if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                            has_bought = !info.is_bought;
-                            info.is_bought = has_bought;
+                            has_bought = info.is_bought;  
                         }
                     }
                 }
@@ -2600,9 +2622,9 @@ impl PumpSwapProcess {
             if sig == metadata_signature {
                 let mut has_bought = false;
                 {
-                    let mut real_pool_info =
-                        raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
-                    let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                    let real_pool_info =
+                        raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                    let pool_info = real_pool_info.get(pool_id).unwrap();
                     for info in pool_info {
                         if info.user_bot_data.user_id.to_string() == user_id.clone() {
                             has_bought = info.is_bought;
