@@ -343,7 +343,7 @@ async fn display_pool_price_change(
                         }
 
                         // Clean up bot state after selling
-                        cleanup_bot_after_sell(&pool_info).await;
+                        set_bot_after_sell(&pool_info).await;
                     } else if percent <= -pool_info.user_bot_data.bot_setting.stop_loss {
                         println!("ALERT: POOL_PRICE decreased more than {}%!", percent);
 
@@ -354,7 +354,7 @@ async fn display_pool_price_change(
                         }
 
                         // Clean up bot state after selling
-                        cleanup_bot_after_sell(&pool_info).await;
+                        set_bot_after_sell(&pool_info).await;
                     } else if pool_info.user_bot_data.bot_setting.auto_exit == 0 {
                         // Immediate sell triggered by stop_bot
                         println!("ALERT: IMMEDIATE SELL triggered by stop_bot!");
@@ -366,7 +366,7 @@ async fn display_pool_price_change(
                         }
 
                         // Clean up bot state after selling
-                        cleanup_bot_after_sell(&pool_info).await;
+                        cleanup_bot_after_stop(&pool_info).await;
                     } else if let Some(bought_at_time) = bought_at {
                         // Fix unsafe unwrap() by using safer conversion
                         let auto_exit_ms =
@@ -394,7 +394,7 @@ async fn display_pool_price_change(
                             }
 
                             // Clean up bot state after selling
-                            cleanup_bot_after_sell(&pool_info).await;
+                            set_bot_after_sell(&pool_info).await;
                         }
                     }
                 }
@@ -2721,12 +2721,36 @@ impl PumpSwapProcess {
     }
 }
 
-/// Clean up bot state after selling tokens
-async fn cleanup_bot_after_sell(
+/// Clean up bot state after sell
+async fn set_bot_after_sell(
     pool_info: &raydium_amm_monitor::backend::services::bot_service::RealPoolInfo,
 ) {
     println!(
-        "🧹 Cleaning up bot state after sell for user: {}",
+        "🧹 Setting bot state after sell for user: {}",
+        pool_info.user_bot_data.user_id
+    );
+    
+    let pool_id = pool_info.user_bot_data.pool_id.clone();
+    let user_id = pool_info.user_bot_data.user_id.clone();
+
+    {
+        let mut real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+        let pool_info = real_pool_info.get_mut(&pool_id).unwrap();
+        for info in pool_info {
+            if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                info.is_bought = false;
+            }
+        }
+        drop(real_pool_info);
+    }
+}
+
+/// Clean up bot state after stop bot
+async fn cleanup_bot_after_stop(
+    pool_info: &raydium_amm_monitor::backend::services::bot_service::RealPoolInfo,
+) {
+    println!(
+        "🧹 Cleaning up bot state after stop bot for user: {}",
         pool_info.user_bot_data.user_id
     );
 
