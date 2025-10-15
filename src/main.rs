@@ -23,6 +23,7 @@ use {
         config::{init_jito, init_nozomi, init_zslot, JITO_CLIENT, RPC_CLIENT},
         instructions::{
             buy::BuyInstructionAccountsExt,
+            sell::SellInstructionAccountsExt,
             SwapBaseInInstructionAccountsExt,
         },
         service::Tips,
@@ -652,7 +653,7 @@ async fn build_and_submit_swap_transaction(
                                 info.signature =
                                     Some(data["result"].as_str().unwrap_or_default().to_string());
                                 has_bought = !info.is_bought;
-                                if (has_bought) {
+                                if has_bought {
                                     info.is_bought = has_bought;
                                 }
                             }
