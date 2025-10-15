@@ -22,7 +22,7 @@ use {
         backend::server::start_backend_server,
         config::{init_jito, init_nozomi, init_zslot, JITO_CLIENT, RPC_CLIENT},
         instructions::{
-            buy::BuyInstructionAccountsExt, sell::SellInstructionAccountsExt,
+            buy::BuyInstructionAccountsExt,
             SwapBaseInInstructionAccountsExt,
         },
         service::Tips,
@@ -1553,7 +1553,9 @@ impl PumpSwapProcess {
         match &instruction.data {
             PumpSwapInstruction::Buy(_buy_params) => {
                 if let Some(mut arranged) = Buy::arrange_accounts(&instruction_clone.accounts) {
-                    if arranged.pool != pool_id.to_string() return Ok(());
+                    if arranged.pool.to_string() != pool_id.to_string() {
+                        return Ok(());
+                    }
                     println!("pumpswap arranged Buy");
                     let post_token_balance = metadata
                         .transaction_metadata
@@ -2062,7 +2064,9 @@ impl PumpSwapProcess {
             }
             PumpSwapInstruction::Sell(_sell_params) => {
                 if let Some(mut arranged) = Sell::arrange_accounts(&instruction_clone.accounts) {
-                    if arranged.pool != pool_id.to_string() return Ok(());
+                    if arranged.pool.to_string() != pool_id.to_string() {
+                        return Ok(());
+                    }
                     println!("pumpswap arranged Sell");
                     let post_token_balance = metadata
                         .transaction_metadata
