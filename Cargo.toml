@@ -7,6 +7,8 @@ edition = "2021"
 carbon-core = "0.9.1"
 carbon-raydium-amm-v4-decoder = "0.9.1"  # Path is correct if files are siblings
 carbon-pump-swap-decoder = "0.9.1"
+carbon-raydium-launchpad-decoder = "0.9.1"
+carbon-raydium-cpmm-decoder = "0.9.1"
 carbon-log-metrics = "0.9.1"
 carbon-yellowstone-grpc-datasource = "0.9.1"
 

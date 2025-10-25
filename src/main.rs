@@ -17,18 +17,30 @@ use {
         instructions::{swap_base_in::SwapBaseIn, RaydiumAmmV4Instruction},
         RaydiumAmmV4Decoder, PROGRAM_ID as RAY_V4_PROGRAM_ID,
     },
+    carbon_raydium_cpmm_decoder::{
+        instructions::{RaydiumCpmmInstruction, swap_base_input::SwapBaseInput},
+        RaydiumCpmmDecoder, PROGRAM_ID as CPMM_PROGRAM_ID,
+    },
+    carbon_raydium_launchpad_decoder::{
+        instructions::{
+            buy_exact_in::BuyExactIn, sell_exact_in::SellExactIn, RaydiumLaunchpadInstruction,
+        },
+        RaydiumLaunchpadDecoder, PROGRAM_ID as LAUNCHPAD_PROGRAM_ID,
+    },
     carbon_yellowstone_grpc_datasource::YellowstoneGrpcGeyserClient,
     raydium_amm_monitor::{
         backend::server::start_backend_server,
         config::{init_jito, init_nozomi, init_zslot, JITO_CLIENT, RPC_CLIENT},
         instructions::{
-            buy::BuyInstructionAccountsExt,
-            sell::SellInstructionAccountsExt,
-            SwapBaseInInstructionAccountsExt,
+            buy::BuyInstructionAccountsExt, sell::SellInstructionAccountsExt,
+            swap_base_in::SwapBaseInInstructionAccountsExt,
+            buy_exact_in::BuyExactInInstructionAccountsExt,
+            sell_exact_in::SellExactInInstructionAccountsExt,
+            swap_base_input::SwapBaseInputInstructionAccountsExt,
         },
         service::Tips,
         utils::{
-            blockhash::{get_slot, recent_blockhash_handler, WSOL},
+            blockhash::{get_slot, recent_blockhash_handler, USD1, WSOL},
             build_and_sign::build_and_sign,
             parse::get_coin_pc_mint,
             swap_quote::sol_token_quote,
@@ -214,6 +226,8 @@ pub async fn main() -> CarbonResult<()> {
         account_include: vec![
             RAY_V4_PROGRAM_ID.to_string().clone(),
             PUMPSWAP_PROGRAM_ID.to_string().clone(),
+            LAUNCHPAD_PROGRAM_ID.to_string().clone(),
+            CPMM_PROGRAM_ID.to_string().clone(),
         ],
         account_exclude: vec![],
         account_required: vec![],
@@ -245,7 +259,9 @@ pub async fn main() -> CarbonResult<()> {
         .metrics(Arc::new(LogMetrics::new()))
         .metrics_flush_interval(3)
         .instruction(RaydiumAmmV4Decoder, RaydiumV4Process)
+        .instruction(RaydiumLaunchpadDecoder, RaydiumLaunchpadProcess)
         .instruction(PumpSwapDecoder, PumpSwapProcess)
+        .instruction(RaydiumCpmmDecoder, RaydiumCpmmProcess)
         .shutdown_strategy(carbon_core::pipeline::ShutdownStrategy::Immediate)
         .build()?
         .run()
@@ -595,47 +611,47 @@ async fn build_and_submit_swap_transaction(
             let transaction: VersionedTransaction = bincode::deserialize(&transaction_bytes)
                 .map_err(|e| format!("Failed to deserialize transaction: {}", e))?;
 
-            // println!("transaction: {:#?}", transaction);
+            println!("transaction: {:#?}", transaction);
 
-            // match simulate_transaction(&transaction).await {
-            //     Ok(simulation_result) => {
-            //         log::info!("=== TRANSACTION SIMULATION RESULTS ===");
-            //         log::info!("Pool ID: {}", pool_info.user_bot_data.pool_id);
-            //         log::info!("User ID: {}", pool_info.user_bot_data.user_id);
-            //         log::info!(
-            //             "Estimated compute units: {}",
-            //             simulation_result.units_consumed.unwrap_or(0)
-            //         );
-            //         log::info!("Simulation successful: {}", simulation_result.err.is_none());
+            match simulate_transaction(&transaction).await {
+                Ok(simulation_result) => {
+                    log::info!("=== TRANSACTION SIMULATION RESULTS ===");
+                    log::info!("Pool ID: {}", pool_info.user_bot_data.pool_id);
+                    log::info!("User ID: {}", pool_info.user_bot_data.user_id);
+                    log::info!(
+                        "Estimated compute units: {}",
+                        simulation_result.units_consumed.unwrap_or(0)
+                    );
+                    log::info!("Simulation successful: {}", simulation_result.err.is_none());
 
-            //         if let Some(logs) = simulation_result.logs {
-            //             log::info!("Simulation logs ({} entries):", logs.len());
-            //             for (i, log_entry) in logs.iter().enumerate() {
-            //                 log::info!("  [{}] {}", i + 1, log_entry);
-            //             }
-            //         }
+                    if let Some(logs) = simulation_result.logs {
+                        log::info!("Simulation logs ({} entries):", logs.len());
+                        for (i, log_entry) in logs.iter().enumerate() {
+                            log::info!("  [{}] {}", i + 1, log_entry);
+                        }
+                    }
 
-            //         if let Some(accounts) = simulation_result.accounts {
-            //             log::info!("Account changes: {} accounts modified", accounts.len());
-            //         }
+                    if let Some(accounts) = simulation_result.accounts {
+                        log::info!("Account changes: {} accounts modified", accounts.len());
+                    }
 
-            //         log::info!("=== END SIMULATION RESULTS ===");
+                    log::info!("=== END SIMULATION RESULTS ===");
 
-            //         // Check if simulation failed
-            //         if simulation_result.err.is_some() {
-            //             log::error!("Transaction simulation failed: {:?}", simulation_result.err);
-            //             return Ok(
-            //                 json!({ "result": "simulation_error", "message": format!("Simulation failed: {:?}", simulation_result.err) }),
-            //             );
-            //         }
-            //     }
-            //     Err(err) => {
-            //         log::error!("Failed to simulate transaction: {}", err);
-            //         return Ok(
-            //             json!({ "result": "simulation_error", "message": format!("Simulation error: {}", err) }),
-            //         );
-            //     }
-            // }
+                    // Check if simulation failed
+                    if simulation_result.err.is_some() {
+                        log::error!("Transaction simulation failed: {:?}", simulation_result.err);
+                        return Ok(
+                            json!({ "result": "simulation_error", "message": format!("Simulation failed: {:?}", simulation_result.err) }),
+                        );
+                    }
+                }
+                Err(err) => {
+                    log::error!("Failed to simulate transaction: {}", err);
+                    return Ok(
+                        json!({ "result": "simulation_error", "message": format!("Simulation error: {}", err) }),
+                    );
+                }
+            }
 
             match jito.send_transaction(&encoded_tx).await {
                 Ok(data) => {
@@ -653,7 +669,7 @@ async fn build_and_submit_swap_transaction(
                                 info.signature =
                                     Some(data["result"].as_str().unwrap_or_default().to_string());
                                 has_bought = !info.is_bought;
-                                if has_bought {
+                                if (has_bought) {
                                     info.is_bought = has_bought;
                                 }
                             }
@@ -710,7 +726,9 @@ async fn save_trade_metrics(
     Ok(())
 }
 pub struct RaydiumV4Process;
+pub struct RaydiumCpmmProcess;
 pub struct PumpSwapProcess;
+pub struct RaydiumLaunchpadProcess;
 
 #[async_trait]
 impl Processor for RaydiumV4Process {
@@ -871,6 +889,9 @@ impl RaydiumV4Process {
                 if let Some(mut arranged) =
                     SwapBaseIn::arrange_accounts(&instruction_clone.accounts)
                 {
+                    if arranged.amm.to_string() != pool_id.to_string() {
+                        return Ok(());
+                    }
                     let post_token_balance = metadata
                         .transaction_metadata
                         .meta
@@ -1267,12 +1288,12 @@ impl RaydiumV4Process {
             if sig == metadata_signature {
                 let mut has_bought = false;
                 {
-                    let real_pool_info =
-                        raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
-                    let pool_info = real_pool_info.get(pool_id).unwrap();
+                    let mut real_pool_info =
+                        raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                    let pool_info = real_pool_info.get_mut(pool_id).unwrap();
                     for info in pool_info {
                         if info.user_bot_data.user_id.to_string() == user_id.clone() {
-                            has_bought = info.is_bought;  
+                            has_bought = info.is_bought;
                         }
                     }
                 }
@@ -1395,6 +1416,1266 @@ impl RaydiumV4Process {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Processor for RaydiumCpmmProcess {
+    type InputType = InstructionProcessorInputType<RaydiumCpmmInstruction>;
+
+    async fn process(
+        &mut self,
+        (metadata, instruction, _nested_instructions, _instructions): Self::InputType,
+        _metrics: Arc<MetricsCollection>,
+    ) -> CarbonResult<()> {
+        let user_list = raydium_amm_monitor::statics::USER_LIST.read().await;
+        let user_list_clone = user_list.clone();
+        drop(user_list); // Release the read lock immediately
+
+        // Process all users concurrently without blocking
+        for user_bot_data in user_list_clone.iter() {
+            // Check if this user's pool_id matches the current transaction
+            let pool_address = match user_bot_data.pool_id.parse::<Pubkey>() {
+                Ok(pubkey) => pubkey,
+                Err(_) => continue, // Skip invalid pool addresses
+            };
+
+            // Check if the pool is involved in this transaction
+            let static_account_keys = metadata.transaction_metadata.message.static_account_keys();
+            let writable_account_keys =
+                &metadata.transaction_metadata.meta.loaded_addresses.writable;
+            let readonly_account_keys =
+                &metadata.transaction_metadata.meta.loaded_addresses.readonly;
+
+            let mut account_keys: Vec<Pubkey> = vec![];
+            account_keys.extend(static_account_keys);
+            account_keys.extend(writable_account_keys);
+            account_keys.extend(readonly_account_keys);
+
+            if !account_keys.contains(&pool_address) || account_keys.contains(&PUMPSWAP_PROGRAM_ID)
+            {
+                continue; // Skip users whose pool is not involved in this transaction
+            }
+
+            let metadata_clone = metadata.clone();
+            let instruction_clone = instruction.clone();
+            let user_bot_data_clone = user_bot_data.clone();
+
+            // Spawn each task without waiting for completion
+            tokio::spawn(async move {
+                let _ =
+                    Self::process_user_data(metadata_clone, instruction_clone, user_bot_data_clone)
+                        .await;
+            });
+        }
+
+        Ok(())
+    }
+}
+
+impl RaydiumCpmmProcess {
+    async fn process_user_data(
+        metadata: carbon_core::instruction::InstructionMetadata,
+        instruction: DecodedInstruction<RaydiumCpmmInstruction>,
+        user_bot_data: raydium_amm_monitor::backend::services::bot_service::UserBotData,
+    ) -> CarbonResult<()> {
+        let static_account_keys = metadata.transaction_metadata.message.static_account_keys();
+        let writable_account_keys = &metadata.transaction_metadata.meta.loaded_addresses.writable;
+        let readonly_account_keys = &metadata.transaction_metadata.meta.loaded_addresses.readonly;
+
+        let mut account_keys: Vec<Pubkey> = vec![];
+
+        account_keys.extend(static_account_keys);
+        account_keys.extend(writable_account_keys);
+        account_keys.extend(readonly_account_keys);
+
+        let pool_id = &user_bot_data.bot_setting.pool_address;
+        let user_id = &user_bot_data.user_id.to_string();
+
+        let pool_address = match pool_id.parse::<Pubkey>() {
+            Ok(pubkey) => pubkey,
+            Err(_) => return Ok(()),
+        };
+
+        if !account_keys.contains(&pool_address) {
+            return Ok(());
+        }
+
+        let initial_pool_info = raydium_amm_monitor::backend::services::bot_service::RealPoolInfo {
+            user_bot_data: user_bot_data.clone(),
+            pool_price: 0.0,
+            latest_pool_price: 0.0,
+            swap_buy_ixs: vec![],
+            is_bought: false,
+            bought_price: None,
+            bought_at: None,
+            initial_wsol_balance: Some(0.0),
+            signature: None,
+            start_time: Some(std::time::Instant::now()),
+            last_profit_sol: None,
+            last_input_lamports_delta: None,
+            last_output_lamports_delta: None,
+            last_roi_pct: None,
+            last_duration: None,
+            fee: 0.01,
+        };
+
+        let mut pool_info = initial_pool_info.clone();
+
+        // Check if pool exists and get existing pool info
+        let pool_exists = {
+            let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+            real_pool_info.contains_key(pool_id)
+        };
+
+        if !pool_exists {
+            println!("Initial pool info inserted");
+            let mut real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+            real_pool_info.insert(pool_id.to_string(), vec![initial_pool_info.clone()]);
+            drop(real_pool_info);
+        } else {
+            // Check if user already exists in this pool
+            let user_exists = {
+                let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                if let Some(pool_infos) = real_pool_info.get(pool_id) {
+                    pool_infos
+                        .iter()
+                        .any(|info| info.user_bot_data.user_id.to_string() == user_id.clone())
+                } else {
+                    false
+                }
+            };
+
+            if !user_exists {
+                println!("Adding user to existing pool");
+                let mut real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                if let Some(pool_infos) = real_pool_info.get_mut(pool_id) {
+                    pool_infos.push(initial_pool_info.clone());
+                }
+                drop(real_pool_info);
+            } else {
+                println!("User already exists in pool, getting existing info");
+                let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                if let Some(pool_infos) = real_pool_info.get(pool_id) {
+                    for info in pool_infos {
+                        if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                            println!("pool_id: {}", info.user_bot_data.bot_setting.pool_address);
+                            pool_info = info.clone();
+                            break;
+                        }
+                    }
+                }
+                drop(real_pool_info);
+            }
+        }
+
+        println!("real_pool_info dropped");
+
+        let instruction_clone: DecodedInstruction<RaydiumCpmmInstruction> = instruction.clone();
+
+        let _buy_ixs = match &instruction.data {
+            RaydiumCpmmInstruction::SwapBaseInput(_swap_base_input_data) => {
+                if let Some(mut arranged) =
+                    SwapBaseInput::arrange_accounts(&instruction_clone.accounts)
+                {
+                    if arranged.pool_state.to_string() != pool_id.to_string() {
+                        return Ok(());
+                    }
+                    let post_token_balance = metadata
+                        .transaction_metadata
+                        .meta
+                        .post_token_balances
+                        .clone();
+
+                    let pre_token_balances = metadata
+                        .transaction_metadata
+                        .meta
+                        .pre_token_balances
+                        .clone();
+
+                    let pre_token_balances_for_chain = pre_token_balances.clone();
+
+                    let full_token_balances: Vec<_> = post_token_balance
+                        .clone()
+                        .into_iter()
+                        .chain(pre_token_balances_for_chain.into_iter())
+                        .collect();
+
+                    let (coin_raw_info, pc_raw_info, pre_coin_raw_info, pre_pc_raw_info) =
+                        get_coin_pc_mint(
+                            post_token_balance.as_ref().unwrap_or(&vec![]),
+                            pre_token_balances.as_ref().unwrap_or(&vec![]),
+                            arranged.input_token_account,
+                            arranged.output_token_account,
+                            arranged.authority,
+                            &account_keys,
+                        );
+
+                    if let (Some(coin_info), Some(pc_info)) = (coin_raw_info, pc_raw_info) {
+                        let user_coin_ata = get_associated_token_address(
+                            &arranged.payer,
+                            &Pubkey::from_str_const(&coin_info.1),
+                        );
+                        let user_coin1_ata = get_associated_token_address(
+                            &arranged.payer,
+                            &Pubkey::from_str_const(&pc_info.1),
+                        );
+
+                        let (input_mint, input_reserve, output_mint, output_reserve) =
+                            if (user_coin_ata == arranged.input_token_account)
+                                || (user_coin1_ata == arranged.output_token_account)
+                            {
+                                (coin_info.1, coin_info.0, pc_info.1, pc_info.0)
+                            } else {
+                                (pc_info.1, pc_info.0, coin_info.1, coin_info.0)
+                            };
+
+                        let input_mint = Pubkey::from_str_const(&input_mint);
+                        let output_mint = Pubkey::from_str_const(&output_mint);
+
+                        let post_output_reserve_val = match output_reserve.parse::<f64>() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                println!(
+                                    "Warning: Invalid output_reserve value: {}",
+                                    output_reserve
+                                );
+                                return Ok(());
+                            }
+                        };
+                        let post_input_reserve_val = match input_reserve.parse::<f64>() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                println!("Warning: Invalid input_reserve value: {}", input_reserve);
+                                return Ok(());
+                            }
+                        };
+
+                        // Get balance of base mint
+                        let mint_decimal: u8;
+
+                        if input_mint == USD1 {
+                            mint_decimal = full_token_balances
+                                .iter()
+                                .flat_map(|balances| balances.iter())
+                                .find(|balance| balance.mint == output_mint.to_string())
+                                .and_then(|balance| Some(balance.ui_token_amount.decimals))
+                                .unwrap_or(6);
+
+                            let pool_price_sol = if post_output_reserve_val > 0.0 {
+                                (post_input_reserve_val / 10f64.powf(6 as f64))
+                                    / (post_output_reserve_val / 10f64.powf(mint_decimal as f64))
+                            } else {
+                                0.0 // Default to 0 if output reserve is zero
+                            };
+                            println!("signature : {}", metadata.transaction_metadata.signature);
+                            println!("pool_price_sol 1: {:?}", pool_price_sol);
+
+                            {
+                                let mut real_pool_info =
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        info.latest_pool_price = pool_price_sol;
+                                    }
+                                }
+                            }
+                        } else {
+                            mint_decimal = full_token_balances
+                                .iter()
+                                .flat_map(|balances| balances.iter())
+                                .find(|balance| balance.mint == input_mint.to_string())
+                                .and_then(|balance| Some(balance.ui_token_amount.decimals))
+                                .unwrap_or(6);
+
+                            let pool_price_sol = if post_input_reserve_val > 0.0 {
+                                (post_output_reserve_val / 10f64.powf(6 as f64))
+                                    / (post_input_reserve_val / 10f64.powf(mint_decimal as f64))
+                            } else {
+                                0.0 // Default to 0 if input reserve is zero
+                            };
+                            println!("signature : {}", metadata.transaction_metadata.signature);
+                            println!("pool_price_sol 2: {:?}", pool_price_sol);
+
+                            {
+                                let mut real_pool_info =
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        info.latest_pool_price = pool_price_sol;
+                                    }
+                                }
+                            }
+                        }
+
+                        arranged.payer = pool_info
+                            .user_bot_data
+                            .public_key
+                            .parse::<Pubkey>()
+                            .clone()
+                            .unwrap();
+
+                        let mut has_bought = false;
+                        {
+                            let real_pool_info =
+                                raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                            let pool_info = real_pool_info.get(pool_id).unwrap();
+                            for info in pool_info {
+                                if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                    has_bought = info.is_bought;
+                                }
+                            }
+                        }
+
+                        if !has_bought {
+                            if input_mint == USD1 {
+                                arranged.input_token_account = get_associated_token_address(
+                                    &pool_info
+                                        .user_bot_data
+                                        .public_key
+                                        .parse::<Pubkey>()
+                                        .clone()
+                                        .unwrap(),
+                                    &input_mint,
+                                );
+                                arranged.output_token_account =
+                                    get_associated_token_address(
+                                        &pool_info
+                                            .user_bot_data
+                                            .public_key
+                                            .parse::<Pubkey>()
+                                            .clone()
+                                            .unwrap(),
+                                        &output_mint,
+                                    );
+                            } else {
+                                arranged.input_token_account = get_associated_token_address(
+                                    &pool_info
+                                        .user_bot_data
+                                        .public_key
+                                        .parse::<Pubkey>()
+                                        .clone()
+                                        .unwrap(),
+                                    &output_mint,
+                                );
+                                arranged.output_token_account =
+                                    get_associated_token_address(
+                                        &pool_info
+                                            .user_bot_data
+                                            .public_key
+                                            .parse::<Pubkey>()
+                                            .clone()
+                                            .unwrap(),
+                                        &input_mint,
+                                    );
+                            }
+                        } else {
+                            if input_mint == USD1 {
+                                arranged.input_token_account = get_associated_token_address(
+                                    &pool_info
+                                        .user_bot_data
+                                        .public_key
+                                        .parse::<Pubkey>()
+                                        .clone()
+                                        .unwrap(),
+                                    &output_mint,
+                                );
+                                arranged.output_token_account =
+                                    get_associated_token_address(
+                                        &pool_info
+                                            .user_bot_data
+                                            .public_key
+                                            .parse::<Pubkey>()
+                                            .clone()
+                                            .unwrap(),
+                                        &input_mint,
+                                    );
+                            } else {
+                                arranged.input_token_account = get_associated_token_address(
+                                    &pool_info
+                                        .user_bot_data
+                                        .public_key
+                                        .parse::<Pubkey>()
+                                        .clone()
+                                        .unwrap(),
+                                    &input_mint,
+                                );
+                                arranged.output_token_account =
+                                    get_associated_token_address(
+                                        &pool_info
+                                            .user_bot_data
+                                            .public_key
+                                            .parse::<Pubkey>()
+                                            .clone()
+                                            .unwrap(),
+                                        &output_mint,
+                                    );
+                            }
+                        }
+
+                        let entry_slippage = pool_info.user_bot_data.bot_setting.entry_slippage;
+                        let exit_slippage = pool_info.user_bot_data.bot_setting.exit_slippage;
+                        let buy_sol_amount =
+                            pool_info.user_bot_data.bot_setting.buy_sol_amount.clone();
+
+                        let amount_in = if !has_bought {
+                            (buy_sol_amount * 10_f64.powf(6.0)) as u64
+                        } else {
+                            let token_balance = match RPC_CLIENT
+                                .get_token_account_balance_with_commitment(
+                                    &arranged.input_token_account,
+                                    CommitmentConfig::processed(),
+                                )
+                                .await
+                            {
+                                Ok(response) => response.value.amount,
+                                Err(_) => {
+                                    return Ok(());
+                                }
+                            };
+
+                            let token_amount = match token_balance.parse::<u64>() {
+                                Ok(amount) => amount,
+                                Err(_) => {
+                                    return Ok(());
+                                }
+                            };
+
+                            token_amount as u64
+                        };
+
+                        let output_reserve_val = match output_reserve.parse::<f64>() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                println!(
+                                    "Warning: Invalid output_reserve value: {}",
+                                    output_reserve
+                                );
+                                return Ok(());
+                            }
+                        };
+                        let input_reserve_val = match input_reserve.parse::<f64>() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                println!("Warning: Invalid input_reserve value: {}", input_reserve);
+                                return Ok(());
+                            }
+                        };
+
+                        // Calculate amount_out by entry_slippage/exit slippage when buying
+                        // Add safety check to prevent division by zero
+                        let amount_out = if input_reserve_val + amount_in as f64 > 0.0 {
+                            if has_bought {
+                                0.997
+                                    * (1.0 - exit_slippage / 100.0)
+                                    * (amount_in as f64)
+                                    * output_reserve_val
+                                    / (input_reserve_val + amount_in as f64)
+                            } else {
+                                0.997
+                                    * (1.0 - entry_slippage / 100.0)
+                                    * (amount_in as f64)
+                                    * output_reserve_val
+                                    / (input_reserve_val + amount_in as f64)
+                            }
+                        } else {
+                            println!("Warning: Invalid reserve values for amount_out calculation");
+                            return Ok(());
+                        };
+
+                        let swap_base_input_param = SwapBaseInput {
+                            amount_in,
+                            minimum_amount_out: amount_out as u64,
+                        };
+
+                        let mut ix: Vec<Instruction> = vec![];
+
+                        let create_ata_ix =
+                            arranged.get_create_idempotent_ata_ix(input_mint, output_mint);
+
+                        ix.extend(create_ata_ix);
+
+                        let swap_ix = arranged.get_swap_base_input_ix(swap_base_input_param);
+                        ix.push(swap_ix);
+
+                        {
+                            let mut real_pool_info =
+                                raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                            let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                            for info in pool_info {
+                                if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                    info.swap_buy_ixs = ix.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            _ => {
+                println!("");
+            }
+        };
+
+        let mut sent_signature = None;
+        {
+            let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+            let pool_info = real_pool_info.get(pool_id).unwrap();
+            for info in pool_info {
+                if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                    sent_signature = info.signature.clone();
+                }
+            }
+        }
+        let metadata_signature = metadata.transaction_metadata.signature.to_string();
+        let metadata_fee: u64 = metadata.transaction_metadata.meta.fee;
+        let mut public_key = None;
+        {
+            let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+            let pool_info = real_pool_info.get(pool_id).unwrap();
+            for info in pool_info {
+                if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                    public_key = info.user_bot_data.public_key.parse::<Pubkey>().ok();
+                }
+            }
+        }
+        let wsol_ata = get_associated_token_address(&public_key.unwrap(), &WSOL);
+        let Some(idx) = account_keys.iter().position(|key| key == &wsol_ata) else {
+            return Ok(());
+        };
+        // let wsol_lamports = metadata.transaction_metadata.meta.pre_balances[idx] - metadata.transaction_metadata.meta.post_balances[idx];
+        if let Some(sig) = sent_signature {
+            if sig == metadata_signature {
+                let mut has_bought = false;
+                {
+                    let mut real_pool_info =
+                        raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                    let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                    for info in pool_info {
+                        if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                            has_bought = info.is_bought;
+                        }
+                    }
+                }
+                println!("Transaction signature confirmed: {}", sig);
+                println!("IS_BOUGHT STATE: {}", has_bought);
+                println!("Transaction fee: {}", metadata_fee);
+                {
+                    let mut real_pool_info =
+                        raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                    let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                    for info in pool_info {
+                        if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                            info.fee += metadata_fee as f64;
+                        }
+                    }
+                }
+                // println!("metadata: {:#?}", metadata);
+                // Compute SOL deltas using signed math and convert lamports -> SOL
+                let pre_lamports = metadata
+                    .transaction_metadata
+                    .meta
+                    .pre_balances
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(0) as i128;
+                let post_lamports = metadata
+                    .transaction_metadata
+                    .meta
+                    .post_balances
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(0) as i128;
+
+                // let input_lamports_delta: i128 = 0; // lamports spent (buy)
+                // let output_lamports_delta: i128 = 0; // lamports received (sell)
+
+                if has_bought {
+                    // Just bought: SOL decreased
+                    let input_lamports_delta = pre_lamports - post_lamports;
+                    {
+                        let mut real_pool_info =
+                            raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                        let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                        for info in pool_info {
+                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                info.last_input_lamports_delta = Some(input_lamports_delta);
+                            }
+                        }
+                    }
+                    let input_sol = input_lamports_delta as f64 / 1_000_000.0;
+                    println!("Input SOL: {}", input_sol);
+                } else {
+                    // Just sold: SOL increased
+                    let output_lamports_delta = post_lamports - pre_lamports;
+                    {
+                        let mut real_pool_info =
+                            raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                        let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                        for info in pool_info {
+                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                info.last_output_lamports_delta = Some(output_lamports_delta);
+                            }
+                        }
+                    }
+                    let output_sol = output_lamports_delta as f64 / 1_000_000.0;
+                    println!("Output SOL: {}", output_sol);
+                    let mut last_output_lamports_delta = None;
+                    {
+                        let real_pool_info =
+                            raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                        let pool_info = real_pool_info.get(pool_id).unwrap();
+                        for info in pool_info {
+                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                last_output_lamports_delta = info.last_output_lamports_delta;
+                            }
+                        }
+                    }
+                    let profit_sol =
+                        (output_lamports_delta - last_output_lamports_delta.unwrap_or(0)) as f64
+                            / 1_000_000.0;
+                    println!("Profit: {}", profit_sol);
+                    {
+                        let mut real_pool_info =
+                            raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                        let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                        for info in pool_info {
+                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                info.last_profit_sol = Some(profit_sol);
+                            }
+                        }
+                    }
+                    let mut last_input_lamports: Option<i128> = None;
+                    {
+                        let real_pool_info =
+                            raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                        let pool_info = real_pool_info.get(pool_id).unwrap();
+                        for info in pool_info {
+                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                last_input_lamports = info.last_input_lamports_delta;
+                            }
+                        }
+                    }
+                    let input_sol = last_input_lamports.unwrap_or(0) as f64 / 1_000_000.0;
+                    let roi = if input_sol > 0.0 {
+                        (profit_sol / input_sol) * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!("ROI: {}", roi);
+                    {
+                        let mut real_pool_info =
+                            raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                        let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                        for info in pool_info {
+                            if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                info.last_roi_pct = Some(roi);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Processor for RaydiumLaunchpadProcess {
+    type InputType = InstructionProcessorInputType<RaydiumLaunchpadInstruction>;
+
+    async fn process(
+        &mut self,
+        (metadata, instruction, _nested_instructions, _instructions): Self::InputType,
+        _metrics: Arc<MetricsCollection>,
+    ) -> CarbonResult<()> {
+        let user_list = raydium_amm_monitor::statics::USER_LIST.read().await;
+        let user_list_clone = user_list.clone();
+        drop(user_list); // Release the read lock immediately
+
+        // Process all users concurrently without blocking
+        for user_bot_data in user_list_clone.iter() {
+            // Check if this user's pool_id matches the current transaction
+            let pool_address = match user_bot_data.pool_id.parse::<Pubkey>() {
+                Ok(pubkey) => pubkey,
+                Err(_) => continue, // Skip invalid pool addresses
+            };
+
+            // Check if the pool is involved in this transaction
+            let static_account_keys = metadata.transaction_metadata.message.static_account_keys();
+            let writable_account_keys =
+                &metadata.transaction_metadata.meta.loaded_addresses.writable;
+            let readonly_account_keys =
+                &metadata.transaction_metadata.meta.loaded_addresses.readonly;
+            let mut account_keys: Vec<Pubkey> = vec![];
+            account_keys.extend(static_account_keys);
+            account_keys.extend(writable_account_keys);
+            account_keys.extend(readonly_account_keys);
+
+            if !account_keys.contains(&pool_address) || account_keys.contains(&LAUNCHPAD_PROGRAM_ID)
+            {
+                continue; // Skip users whose pool is not involved in this transaction
+            }
+
+            let metadata_clone = metadata.clone();
+            let instruction_clone = instruction.clone();
+            let user_bot_data_clone = user_bot_data.clone();
+
+            tokio::spawn(async move {
+                let _ =
+                    Self::process_user_data(metadata_clone, instruction_clone, user_bot_data_clone)
+                        .await;
+            });
+        }
+        Ok(())
+    }
+}
+
+impl RaydiumLaunchpadProcess {
+    async fn process_user_data(
+        metadata: carbon_core::instruction::InstructionMetadata,
+        instruction: DecodedInstruction<RaydiumLaunchpadInstruction>,
+        user_bot_data: raydium_amm_monitor::backend::services::bot_service::UserBotData,
+    ) -> CarbonResult<()> {
+        let static_account_keys = metadata.transaction_metadata.message.static_account_keys();
+        let writable_account_keys = &metadata.transaction_metadata.meta.loaded_addresses.writable;
+        let readonly_account_keys = &metadata.transaction_metadata.meta.loaded_addresses.readonly;
+
+        let mut account_keys: Vec<Pubkey> = vec![];
+
+        account_keys.extend(static_account_keys);
+        account_keys.extend(writable_account_keys);
+        account_keys.extend(readonly_account_keys);
+
+        let pool_id = &user_bot_data.bot_setting.pool_address;
+        let user_id = &user_bot_data.user_id.to_string();
+
+        let pool_address = match pool_id.parse::<Pubkey>() {
+            Ok(pubkey) => pubkey,
+            Err(_) => return Ok(()),
+        };
+
+        if !account_keys.contains(&pool_address) {
+            return Ok(());
+        }
+
+        let initial_pool_info = raydium_amm_monitor::backend::services::bot_service::RealPoolInfo {
+            user_bot_data: user_bot_data.clone(),
+            pool_price: 0.0,
+            latest_pool_price: 0.0,
+            swap_buy_ixs: vec![],
+            is_bought: false,
+            bought_price: None,
+            bought_at: None,
+            initial_wsol_balance: Some(0.0),
+            signature: None,
+            start_time: Some(std::time::Instant::now()),
+            last_profit_sol: None,
+            last_input_lamports_delta: None,
+            last_output_lamports_delta: None,
+            last_roi_pct: None,
+            last_duration: None,
+            fee: 0.01,
+        };
+
+        let mut pool_info = initial_pool_info.clone();
+
+        // Check if pool exists and get existing pool info
+        let pool_exists = {
+            let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+            real_pool_info.contains_key(pool_id)
+        };
+
+        if !pool_exists {
+            println!("Initial pool info inserted");
+            let mut real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+            real_pool_info.insert(pool_id.to_string(), vec![initial_pool_info.clone()]);
+            drop(real_pool_info);
+        } else {
+            // Check if user already exists in this pool
+            let user_exists = {
+                let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                if let Some(pool_infos) = real_pool_info.get(pool_id) {
+                    pool_infos
+                        .iter()
+                        .any(|info| info.user_bot_data.user_id.to_string() == user_id.clone())
+                } else {
+                    false
+                }
+            };
+
+            if !user_exists {
+                println!("Adding user to existing pool");
+                let mut real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                if let Some(pool_infos) = real_pool_info.get_mut(pool_id) {
+                    pool_infos.push(initial_pool_info.clone());
+                }
+                drop(real_pool_info);
+            } else {
+                println!("User already exists in pool, getting existing info");
+                let real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                if let Some(pool_infos) = real_pool_info.get(pool_id) {
+                    for info in pool_infos {
+                        if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                            println!("pool_id: {}", info.user_bot_data.bot_setting.pool_address);
+                            pool_info = info.clone();
+                            break;
+                        }
+                    }
+                }
+                drop(real_pool_info);
+            }
+        }
+
+        println!("real_pool_info dropped");
+
+        let instruction_clone: DecodedInstruction<RaydiumLaunchpadInstruction> =
+            instruction.clone();
+
+        match &instruction_clone.data {
+            RaydiumLaunchpadInstruction::BuyExactIn(_buy_exact_in_data) => {
+                if let Some(mut arranged) =
+                    BuyExactIn::arrange_accounts(&instruction_clone.accounts)
+                {
+                    if arranged.pool_state.to_string() != pool_id.to_string() {
+                        return Ok(());
+                    }
+                    println!("launchpad arranged BuyExactIn");
+                    let post_token_balance = metadata
+                        .transaction_metadata
+                        .meta
+                        .post_token_balances
+                        .clone();
+                    let pre_token_balance = metadata
+                        .transaction_metadata
+                        .meta
+                        .pre_token_balances
+                        .clone();
+
+                    let pre_token_balances_for_chain = pre_token_balance.clone();
+
+                    let full_token_balances: Vec<_> = post_token_balance
+                        .clone()
+                        .into_iter()
+                        .chain(pre_token_balance.clone().into_iter())
+                        .collect();
+
+                    let (coin_raw_info, pc_raw_info, pre_coin_raw_info, pre_pc_raw_info) =
+                        get_coin_pc_mint(
+                            post_token_balance.as_ref().unwrap_or(&vec![]),
+                            pre_token_balances_for_chain.as_ref().unwrap_or(&vec![]),
+                            arranged.base_vault,
+                            arranged.quote_vault,
+                            arranged.authority,
+                            &account_keys,
+                        );
+
+                    if let (
+                        Some(coin_info),
+                        Some(pc_info),
+                        Some(pre_coin_raw_info),
+                        Some(pre_pc_raw_info),
+                    ) = (
+                        coin_raw_info,
+                        pc_raw_info,
+                        pre_coin_raw_info,
+                        pre_pc_raw_info,
+                    ) {
+                        let user_coin_ata = get_associated_token_address(
+                            &arranged.payer,
+                            &Pubkey::from_str_const(&coin_info.1),
+                        );
+                        let user_pc_ata = get_associated_token_address(
+                            &arranged.payer,
+                            &Pubkey::from_str_const(&pc_info.1),
+                        );
+
+                        let (input_mint, input_reserve, output_mint, output_reserve) =
+                            if (user_coin_ata == arranged.user_base_token)
+                                || (user_pc_ata == arranged.user_quote_token)
+                            {
+                                (coin_info.1, coin_info.0, pc_info.1, pc_info.0)
+                            } else {
+                                (pc_info.1, pc_info.0, coin_info.1, coin_info.0)
+                            };
+
+                        let input_mint = Pubkey::from_str_const(&input_mint);
+                        let output_mint = Pubkey::from_str_const(&output_mint);
+
+                        if input_mint == USD1 {
+                            let post_output_reserve_val = match output_reserve.parse::<f64>() {
+                                Ok(val) => val,
+                                Err(_) => {
+                                    println!(
+                                        "Warning: Invalid output_reserve value: {}",
+                                        output_reserve
+                                    );
+                                    return Ok(());
+                                }
+                            };
+                            let post_input_reserve_val = match input_reserve.parse::<f64>() {
+                                Ok(val) => val,
+                                Err(_) => {
+                                    println!(
+                                        "Warning: Invalid input_reserve value: {}",
+                                        input_reserve
+                                    );
+                                    return Ok(());
+                                }
+                            };
+
+                            let mint_decimal = full_token_balances
+                                .iter()
+                                .flat_map(|balances| balances.iter())
+                                .find(|balance| balance.mint == output_mint.to_string())
+                                .and_then(|balance| Some(balance.ui_token_amount.decimals))
+                                .unwrap_or(6);
+
+                            let pool_price_sol = if post_output_reserve_val > 0.0 {
+                                (post_input_reserve_val / 10f64.powf(6 as f64))
+                                    / (post_output_reserve_val / 10f64.powf(mint_decimal as f64))
+                            } else {
+                                0.0 // Default to 0 if output reserve is zero
+                            };
+                            println!("signature : {}", metadata.transaction_metadata.signature);
+                            println!("pool_price_sol launchpad: {:?}", pool_price_sol);
+
+                            {
+                                let mut real_pool_info =
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        info.latest_pool_price = pool_price_sol;
+                                    }
+                                }
+                            }
+
+                            arranged.payer = pool_info
+                                .user_bot_data
+                                .public_key
+                                .parse::<Pubkey>()
+                                .unwrap();
+
+                            let mut has_bought = false;
+                            {
+                                let real_pool_info =
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                                let pool_info = real_pool_info.get(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        has_bought = info.is_bought;
+                                    }
+                                }
+                            }
+
+                            arranged.user_base_token = get_associated_token_address(
+                                &pool_info
+                                    .user_bot_data
+                                    .public_key
+                                    .parse::<Pubkey>()
+                                    .unwrap(),
+                                &input_mint,
+                            );
+                            arranged.user_quote_token = get_associated_token_address(
+                                &pool_info
+                                    .user_bot_data
+                                    .public_key
+                                    .parse::<Pubkey>()
+                                    .unwrap(),
+                                &input_mint,
+                            );
+
+                            let entry_slippage = pool_info.user_bot_data.bot_setting.entry_slippage;
+                            let exit_slippage = pool_info.user_bot_data.bot_setting.exit_slippage;
+                            let buy_usd1_amount =
+                                pool_info.user_bot_data.bot_setting.buy_usd1_amount.clone();
+
+                            let amount_in = if !has_bought {
+                                (buy_usd1_amount * 10_f64.powf(6.0)) as u64
+                            } else {
+                                let token_balance = match RPC_CLIENT
+                                    .get_token_account_balance_with_commitment(
+                                        &arranged.user_quote_token,
+                                        CommitmentConfig::processed(),
+                                    )
+                                    .await
+                                {
+                                    Ok(response) => response.value.amount,
+                                    Err(_) => {
+                                        return Ok(());
+                                    }
+                                };
+
+                                let token_amount = match token_balance.parse::<u64>() {
+                                    Ok(amount) => amount,
+                                    Err(_) => {
+                                        return Ok(());
+                                    }
+                                };
+
+                                token_amount as u64
+                            };
+
+                             let minimum_amount_out = 0;
+                             let share_fee_rate = 0;
+
+                             let mut instructions = vec![];
+                             
+                             if has_bought {
+                                 let sell_ix = arranged.get_sell_ix(SellExactIn {
+                                     amount_in: amount_in,
+                                     minimum_amount_out: minimum_amount_out,
+                                     share_fee_rate: share_fee_rate,
+                                 });
+                                 instructions.push(sell_ix);
+                             } else {
+                                 let buy_ix = arranged.get_buy_ix(BuyExactIn {
+                                     amount_in: amount_in,
+                                     minimum_amount_out: minimum_amount_out,
+                                     share_fee_rate: share_fee_rate,
+                                 });
+                                 instructions.push(buy_ix);
+                             }
+
+                             {
+                                 let mut real_pool_info =
+                                     raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                 let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                 for info in pool_info {
+                                     if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                         info.swap_buy_ixs = instructions.clone();
+                                     }
+                                 }
+                             }
+                        }
+                    }
+                } else {
+                    println!("Failed to arrange accounts");
+                    return Ok(());
+                }
+            }
+            RaydiumLaunchpadInstruction::SellExactIn(_sell_exact_in_data) => {
+                if let Some(mut arranged) = SellExactIn::arrange_accounts(&instruction_clone.accounts) {
+                    if arranged.pool_state.to_string() != pool_id.to_string() {
+                        return Ok(());
+                    }
+                    println!("launchpad arranged SellExactIn");
+                    let post_token_balance = metadata
+                        .transaction_metadata
+                        .meta
+                        .post_token_balances
+                        .clone();
+                    let pre_token_balance = metadata
+                        .transaction_metadata
+                        .meta
+                        .pre_token_balances
+                        .clone();
+
+                    let pre_token_balances_for_chain = pre_token_balance.clone();
+
+                    let full_token_balances: Vec<_> = post_token_balance
+                        .clone()
+                        .into_iter()
+                        .chain(pre_token_balance.clone().into_iter())
+                        .collect();
+
+                    let (coin_raw_info, pc_raw_info, pre_coin_raw_info, pre_pc_raw_info) =
+                        get_coin_pc_mint(
+                            post_token_balance.as_ref().unwrap_or(&vec![]),
+                            pre_token_balances_for_chain.as_ref().unwrap_or(&vec![]),
+                            arranged.base_vault,
+                            arranged.quote_vault,
+                            arranged.authority,
+                            &account_keys,
+                        );
+
+                    if let (
+                        Some(coin_info),
+                        Some(pc_info),
+                        Some(pre_coin_raw_info),
+                        Some(pre_pc_raw_info),
+                    ) = (
+                        coin_raw_info,
+                        pc_raw_info,
+                        pre_coin_raw_info,
+                        pre_pc_raw_info,
+                    ) {
+                        let user_coin_ata = get_associated_token_address(
+                            &arranged.payer,
+                            &Pubkey::from_str_const(&coin_info.1),
+                        );
+                        let user_pc_ata = get_associated_token_address(
+                            &arranged.payer,
+                            &Pubkey::from_str_const(&pc_info.1),
+                        );
+
+                        let (input_mint, input_reserve, output_mint, output_reserve) =
+                            if (user_coin_ata == arranged.user_base_token)
+                                || (user_pc_ata == arranged.user_quote_token)
+                            {
+                                (coin_info.1, coin_info.0, pc_info.1, pc_info.0)
+                            } else {
+                                (pc_info.1, pc_info.0, coin_info.1, coin_info.0)
+                            };
+
+                        let input_mint = Pubkey::from_str_const(&input_mint);
+                        let output_mint = Pubkey::from_str_const(&output_mint);
+
+                        if output_mint == USD1 {
+                            let post_output_reserve_val = match output_reserve.parse::<f64>() {
+                                Ok(val) => val,
+                                Err(_) => {
+                                    println!("Warning: Invalid output_reserve value: {}", output_reserve);
+                                    return Ok(());
+                                }
+                            };
+                            let post_input_reserve_val = match input_reserve.parse::<f64>() {
+                                Ok(val) => val,
+                                Err(_) => {
+                                    println!("Warning: Invalid input_reserve value: {}", input_reserve);
+                                    return Ok(());
+                                }
+                            };
+
+                            let mint_decimal = full_token_balances
+                                .iter()
+                                .flat_map(|balances| balances.iter())
+                                .find(|balance| balance.mint == output_mint.to_string())
+                                .and_then(|balance| Some(balance.ui_token_amount.decimals))
+                                .unwrap_or(6);
+
+                            let pool_price_sol = if post_input_reserve_val > 0.0 {
+                                (post_output_reserve_val / 10f64.powf(6 as f64))
+                                    / (post_input_reserve_val / 10f64.powf(mint_decimal as f64))
+                            } else {
+                                0.0 // Default to 0 if output reserve is zero
+                            };
+                            println!("signature : {}", metadata.transaction_metadata.signature);
+                            println!("pool_price_sol launchpad: {:?}", pool_price_sol);
+
+                            {
+                                let mut real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        info.latest_pool_price = pool_price_sol;
+                                    }
+                                }
+                            }
+
+                            arranged.payer = pool_info
+                                .user_bot_data
+                                .public_key
+                                .parse::<Pubkey>()
+                                .unwrap();
+
+                            arranged.user_base_token = get_associated_token_address(
+                                &pool_info
+                                    .user_bot_data
+                                    .public_key
+                                    .parse::<Pubkey>()
+                                    .unwrap(),
+                                &input_mint,
+                            );
+                            arranged.user_quote_token = get_associated_token_address(
+                                &pool_info
+                                    .user_bot_data
+                                    .public_key
+                                    .parse::<Pubkey>()
+                                    .unwrap(),
+                                &input_mint,
+                            );
+
+                            let mut has_bought = false;
+                            {
+                                let real_pool_info =
+                                    raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
+                                let pool_info = real_pool_info.get(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        has_bought = info.is_bought;
+                                    }
+                                }
+                            }
+
+                            let entry_slippage = pool_info.user_bot_data.bot_setting.entry_slippage;
+                            let exit_slippage = pool_info.user_bot_data.bot_setting.exit_slippage;
+                            let buy_usd1_amount =
+                                pool_info.user_bot_data.bot_setting.buy_usd1_amount.clone();
+
+                            let amount_in = if !has_bought {
+                                (buy_usd1_amount * 10_f64.powf(6.0)) as u64
+                            } else {
+                                let token_balance = match RPC_CLIENT
+                                    .get_token_account_balance_with_commitment(
+                                        &arranged.user_base_token,
+                                        CommitmentConfig::processed(),
+                                    )
+                                    .await
+                                {
+                                    Ok(response) => response.value.amount,
+                                    Err(_) => {
+                                        return Ok(());
+                                    }
+                                };
+
+                                let token_amount = match token_balance.parse::<u64>() {
+                                    Ok(amount) => amount,
+                                    Err(_) => {
+                                        return Ok(());
+                                    }
+                                };
+
+                                token_amount as u64
+                            };
+
+                            let minimum_amount_out = 0;
+                            let share_fee_rate = 0;
+
+                            let mut instructions = vec![];
+
+                            if !has_bought {
+                                let sell_ix = arranged.get_sell_ix(SellExactIn {
+                                    amount_in: amount_in,
+                                    minimum_amount_out: minimum_amount_out,
+                                    share_fee_rate: share_fee_rate,
+                                });
+                                instructions.push(sell_ix);
+                            } else {
+                                let buy_ix = arranged.get_buy_ix(BuyExactIn {
+                                    amount_in: amount_in,
+                                    minimum_amount_out: minimum_amount_out,
+                                    share_fee_rate: share_fee_rate,
+                                });
+                                instructions.push(buy_ix);
+                            }
+
+                            {
+                                let mut real_pool_info = raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                                let pool_info = real_pool_info.get_mut(pool_id).unwrap();
+                                for info in pool_info {
+                                    if info.user_bot_data.user_id.to_string() == user_id.clone() {
+                                        info.swap_buy_ixs = instructions.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    println!("Failed to arrange accounts");
+                    return Ok(());
+                }
+            }
+            _ => {
+                // Handle other RaydiumLaunchpadInstruction variants
+                return Ok(());
+            }
+        };
+
         Ok(())
     }
 }
@@ -2629,9 +3910,9 @@ impl PumpSwapProcess {
             if sig == metadata_signature {
                 let mut has_bought = false;
                 {
-                    let real_pool_info =
-                        raydium_amm_monitor::statics::REAL_POOL_INFO.read().await;
-                    let pool_info = real_pool_info.get(pool_id).unwrap();
+                    let mut real_pool_info =
+                        raydium_amm_monitor::statics::REAL_POOL_INFO.write().await;
+                    let pool_info = real_pool_info.get_mut(pool_id).unwrap();
                     for info in pool_info {
                         if info.user_bot_data.user_id.to_string() == user_id.clone() {
                             has_bought = info.is_bought;

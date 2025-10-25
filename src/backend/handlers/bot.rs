@@ -29,6 +29,8 @@ pub struct UpdateTradingParamsRequest {
     pub pool_address: Option<String>,
     #[validate(range(min = 0.0001, max = 1000.0))]
     pub buy_sol_amount: Option<f64>,
+    #[validate(range(min = 0.1, max = 100000.0))]
+    pub buy_usd1_amount: Option<f64>,
     #[validate(range(min = 0.0001, max = 100.0))]
     pub entry_percent: Option<f64>,
     #[validate(range(min = 0.1, max = 50.0))]
@@ -118,6 +120,7 @@ pub async fn update_trading_params(
         &user_id,
         payload.pool_address,
         payload.buy_sol_amount,
+        payload.buy_usd1_amount,
         payload.entry_percent,
         payload.entry_slippage,
         payload.exit_slippage,

@@ -86,6 +86,7 @@ impl BotService {
         user_id: &str,
         pool_address: Option<String>,
         buy_sol_amount: Option<f64>,
+        buy_usd1_amount: Option<f64>,
         entry_percent: Option<f64>,
         entry_slippage: Option<f64>,
         exit_slippage: Option<f64>,
@@ -104,6 +105,7 @@ impl BotService {
         bot.update_trading_params(
             pool_address,
             buy_sol_amount,
+            buy_usd1_amount,
             entry_percent,
             entry_slippage,
             exit_slippage,

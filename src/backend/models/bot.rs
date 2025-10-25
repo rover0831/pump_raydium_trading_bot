@@ -17,7 +17,8 @@ pub struct BotSettings {
     // Trading Parameters
     #[validate(range(min = 0.0001, max = 1000.0))]
     pub buy_sol_amount: f64,
-
+    #[validate(range(min = 0.1, max = 100000.0))]
+    pub buy_usd1_amount: f64,
     #[validate(range(min = 0.0001, max = 100.0))]
     pub entry_percent: f64,
 
@@ -64,6 +65,7 @@ impl BotSettings {
             name,
             pool_address,
             buy_sol_amount: 0.001,
+            buy_usd1_amount: 0.1,
             entry_percent: 0.01,
             entry_slippage: 5.0,
             exit_slippage: 100.0,
@@ -92,6 +94,7 @@ impl BotSettings {
         &mut self,
         pool_address: Option<String>,
         buy_sol_amount: Option<f64>,
+        buy_usd1_amount: Option<f64>,
         entry_percent: Option<f64>,
         entry_slippage: Option<f64>,
         exit_slippage: Option<f64>,
@@ -104,6 +107,9 @@ impl BotSettings {
         }
         if let Some(amount) = buy_sol_amount {
             self.buy_sol_amount = amount;
+        }
+        if let Some(amount) = buy_usd1_amount {
+            self.buy_usd1_amount = amount;
         }
         if let Some(percent) = entry_percent {
             self.entry_percent = percent;
@@ -156,6 +162,7 @@ pub struct BotSettingsResponse {
     pub name: String,
     pub pool_address: String,
     pub buy_sol_amount: f64,
+    pub buy_usd1_amount: f64,
     pub entry_percent: f64,
     pub entry_slippage: f64,
     pub exit_slippage: f64,
@@ -178,6 +185,7 @@ impl From<BotSettings> for BotSettingsResponse {
             name: bot.name,
             pool_address: bot.pool_address,
             buy_sol_amount: bot.buy_sol_amount,
+            buy_usd1_amount: bot.buy_usd1_amount,
             entry_percent: bot.entry_percent,
             entry_slippage: bot.entry_slippage,
             exit_slippage: bot.exit_slippage,
@@ -202,6 +210,7 @@ impl Default for BotSettingsResponse {
             name: String::new(),
             pool_address: String::new(),
             buy_sol_amount: 0.0,
+            buy_usd1_amount: 0.0,
             entry_percent: 0.0,
             entry_slippage: 0.0,
             exit_slippage: 0.0,

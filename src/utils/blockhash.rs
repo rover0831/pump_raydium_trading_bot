@@ -40,3 +40,6 @@ pub async fn recent_blockhash_handler(rpc_client: Arc<RpcClient>) {
 
 pub const WSOL: solana_program::pubkey::Pubkey =
     pubkey!("So11111111111111111111111111111111111111112");
+
+pub const USD1: solana_program::pubkey::Pubkey =
+    pubkey!("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB");
